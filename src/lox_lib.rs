@@ -63,7 +63,6 @@ pub mod lox_lib{
                 if *n == $val {
                     temp = $yes;
                     let e = $s.stream.as_mut().unwrap().next();
-                    println!("Consumed: {:?}", e);
                      $s.current += 1;
                      $s.total_current += 1;
                 }
@@ -276,6 +275,7 @@ pub mod lox_lib{
         use itertools::__std_iter::Peekable;
         use std::slice::Iter;
         use anyhow::{Result, Error, Context};
+        use anyhow::anyhow;
 
         #[derive(Debug, Clone)]
         pub enum Expr<'a>{
@@ -295,7 +295,7 @@ pub mod lox_lib{
                 Self { tokens, current:0 }
             }
 
-            pub fn parse(&'a mut self) -> Expr<'a>{
+            pub fn parse(&'a mut self) -> Result<Expr<'a>>{
                 self.expression()
             }
 
@@ -354,70 +354,70 @@ pub mod lox_lib{
                 false
             }
 
-            fn expression(&mut self) -> Expr<'a>{
+            fn expression(&mut self) -> Result<Expr<'a>>{
                 self.equality()
             }
 
-            fn equality(&mut self) -> Expr<'a>{
+            fn equality(&mut self) -> Result<Expr<'a>>{
                 let mut expr = self.comparison();
                 while self.token_match([Token::EqualEqual, Token::BangEqual]){
                     let operator = self.previous();
                     let right = self.comparison();
-                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                    expr = Ok(Expr::Binary(operator, Box::new(expr?), Box::new(right?)));
                 }
                 expr
             }
 
-            fn comparison(&mut self) -> Expr<'a>{
+            fn comparison(&mut self) -> Result<Expr<'a>>{
                 let mut expr = self.term();
                 while self.token_match([Token::Greater, Token::GreaterEqual, Token::Less, Token::LessEqual]){
                     let operator = self.previous();
                     let right = self.term();
-                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                    expr = Ok(Expr::Binary(operator, Box::new(expr?), Box::new(right?)));
                 }
                 expr
             }
 
-            fn term(&mut self) -> Expr<'a>{
+            fn term(&mut self) -> Result<Expr<'a>>{
                 let mut expr = self.factor();
                 while self.token_match([Token::Minus, Token::Plus]){
                     let operator = self.previous();
                     let right = self.factor();
-                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                    expr = Ok(Expr::Binary(operator, Box::new(expr?), Box::new(right?)));
                 }
                 expr
             }
 
-            fn factor(&mut self) -> Expr<'a>{
+            fn factor(&mut self) -> Result<Expr<'a>>{
                 let mut expr = self.unary();
                 while self.token_match([Token::Slash, Token::Star]){
                     let operator = self.previous();
                     let right = self.unary();
-                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                    expr = Ok(Expr::Binary(operator, Box::new(expr?), Box::new(right?)));
                 }
                 expr
             }
-            fn unary(&mut self) -> Expr<'a>{
+            fn unary(&mut self) -> Result<Expr<'a>>{
                 if self.token_match([Token::Bang, Token::Minus]){
                     let operator = self.previous();
                     let expr = self.unary();
-                    return Expr::Unary(operator, Box::new(expr))
+                    return Ok(Expr::Unary(operator, Box::new(expr?)))
                 }
                 self.primary()
             }
 
-            fn primary(&mut self) -> Expr<'a>{
+            fn primary(&mut self) -> Result<Expr<'a>>{
                 if self.token_match([Token::Number(0.0), Token::String(String::new()), Token::True, Token::False, Token::Nil]){
                     let literal = self.previous();
-                    return Expr::Literal(literal)
+                    return Ok(Expr::Literal(literal))
                 }
                 if self.token_match([Token::LeftParen]){
                     let expr = self.expression();
                     if self.token_match([Token::RightParen]){
-                        return Expr::Grouping(Box::new(expr))
+                        return Ok(Expr::Grouping(Box::new(expr?)))
                     }
                 }
-                panic!("Parsing went wrong!!! :(")
+                Err(anyhow!("Syntax error at token {}", self.current+1))
             }
 
         }
