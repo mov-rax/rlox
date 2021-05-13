@@ -5,16 +5,12 @@ mod lox_lib;
 use lox_lib::lox_lib::parser::Expr;
 use lox_lib::lox_lib::lexer::Token;
 fn main() {
-    let tokens = lox_lib::lox_lib::lexer::Scanner::from(r#"var whatever = {420}"#).scan_tokens();
-    let expr = Expr::Binary(Token::Minus, Box::new(
-        Expr::Unary(Token::Minus, Box::new(Expr::Literal(Token::Number(123.0))))
-    ), Box::new(
-        Expr::Grouping(
-            Box::new(Expr::Literal(Token::Number(45.67)))
-        )
-    ));
+    let tokens = lox_lib::lox_lib::lexer::Scanner::from(r#"(3+2)*3==15"#).scan_tokens().unwrap();
+    let mut parser = lox_lib::lox_lib::parser::Parser::from(tokens);
+    let expr = parser.parse();
 
-    println!("{:?}", tokens);
+
+    //println!("{:?}", tokens);
     println!("{:?}", expr);
     println!("Hello, world!");
 }

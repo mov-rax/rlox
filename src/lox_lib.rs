@@ -7,29 +7,6 @@ pub mod lox_lib{
         use std::str::{Chars, FromStr};
         use itertools::__std_iter::Peekable;
         use std::collections::HashMap;
-        lazy_static! {
-        static ref RESERVED_IDENTS: HashMap<&'static str, Token<'static>> = {
-            let mut m = HashMap::new();
-            m.insert("if", Token::If);
-            m.insert("else", Token::Else);
-            m.insert("class", Token::Class);
-            m.insert("for", Token::For);
-            m.insert("while", Token::While);
-            m.insert("fun", Token::Fun);
-            m.insert("true", Token::True);
-            m.insert("false", Token::False);
-            m.insert("and", Token::And);
-            m.insert("or", Token::Or);
-            m.insert("nil", Token::Nil);
-            m.insert("this", Token::This);
-            m.insert("super", Token::Super);
-            m.insert("var", Token::Var);
-            m.insert("return", Token::Return);
-            m.insert("print", Token::Print);
-            m
-        };
-    }
-
 
         #[derive(Debug, PartialEq, Clone)]
         pub enum Token<'a>{
@@ -238,11 +215,31 @@ pub mod lox_lib{
                             }
 
                             let stringy = self.src.get(self.total_current-1..self.total_current+len).unwrap();
-                            if let Some(n) = RESERVED_IDENTS.get(stringy){
-                                tok = n.clone();
+
+                            if let Some(n) = match stringy{
+                                "if" => Some(Token::If),
+                                "else" => Some(Token::Else),
+                                "class" => Some(Token::Class),
+                                "for" => Some(Token::For),
+                                "while" => Some(Token::While),
+                                "fun" => Some(Token::Fun),
+                                "true" => Some(Token::True),
+                                "false" => Some(Token::False),
+                                "and" => Some(Token::And),
+                                "or" => Some(Token::Or),
+                                "nil" => Some(Token::Nil),
+                                "this" => Some(Token::This),
+                                "super" => Some(Token::Super),
+                                "var" => Some(Token::Var),
+                                "return" => Some(Token::Return),
+                                "print" => Some(Token::Print),
+                                _ => None
+                            }{
+                                tok = n.to_owned();
                             } else {
                                 tok = Token::Identifier(stringy);
                             }
+
                             self.total_current += len;
                             self.current += len;
                         }
@@ -278,7 +275,7 @@ pub mod lox_lib{
         use super::lexer::Token;
         use itertools::__std_iter::Peekable;
         use std::slice::Iter;
-        use std::mem::MaybeUninit;
+        use anyhow::{Result, Error, Context};
 
         #[derive(Debug, Clone)]
         pub enum Expr<'a>{
@@ -290,17 +287,71 @@ pub mod lox_lib{
 
         pub struct Parser<'a>{
             tokens: Vec<Token<'a>>,
+            current: usize,
         }
 
         impl<'a> Parser<'a>{
             pub fn from(tokens: Vec<Token<'a>>) -> Self{
-
-                Self {
-                    tokens,
-                }
+                Self { tokens, current:0 }
             }
+
             pub fn parse(&'a mut self) -> Expr<'a>{
-                todo!()
+                self.expression()
+            }
+
+            fn peek(&self) -> &Token<'a>{
+                &self.tokens[self.current]
+            }
+
+            fn is_at_end(&self) -> bool{
+               self.peek() == &Token::Eof
+            }
+
+            fn previous(&self) -> Token<'a>{
+                return self.tokens[self.current-1].clone()
+            }
+
+            fn advance(&mut self) -> Token<'a>{
+                if let Some(tok) = self.tokens.get(self.current){
+                    if tok != &Token::Eof{
+                        self.current += 1;
+                        return tok.clone()
+                    }
+                }
+                self.previous()
+            }
+
+            fn token_match<const N:usize>(&mut self, tokens: [Token<'a>; N]) -> bool{
+                for token in &tokens{
+                    if let Some(tok) = self.tokens.get(self.current){
+                        let matcher = |a:&Token,b:&Token| match a {
+                            Token::String(_) => {
+                                if let Token::String(_) = b {
+                                    return true
+                                }
+                                false
+                            },
+                            Token::Number(_) => {
+                                if let Token::Number(_) = b{
+                                    return true
+                                }
+                                false
+                            },
+                            Token::Identifier(_) => {
+                                if let Token::Identifier(_) = b{
+                                    return true
+                                }
+                                false
+                            }
+                            other => other == b
+                        };
+                        if matcher(token,tok) {
+                            self.advance();
+                            return true
+                        }
+                    }
+                }
+                false
             }
 
             fn expression(&mut self) -> Expr<'a>{
@@ -309,20 +360,67 @@ pub mod lox_lib{
 
             fn equality(&mut self) -> Expr<'a>{
                 let mut expr = self.comparison();
-
-                let iter = self.tokens.iter().peekable();
-
+                while self.token_match([Token::EqualEqual, Token::BangEqual]){
+                    let operator = self.previous();
+                    let right = self.comparison();
+                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                }
                 expr
             }
 
             fn comparison(&mut self) -> Expr<'a>{
-                todo!()
+                let mut expr = self.term();
+                while self.token_match([Token::Greater, Token::GreaterEqual, Token::Less, Token::LessEqual]){
+                    let operator = self.previous();
+                    let right = self.term();
+                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                }
+                expr
             }
+
+            fn term(&mut self) -> Expr<'a>{
+                let mut expr = self.factor();
+                while self.token_match([Token::Minus, Token::Plus]){
+                    let operator = self.previous();
+                    let right = self.factor();
+                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                }
+                expr
+            }
+
+            fn factor(&mut self) -> Expr<'a>{
+                let mut expr = self.unary();
+                while self.token_match([Token::Slash, Token::Star]){
+                    let operator = self.previous();
+                    let right = self.unary();
+                    expr = Expr::Binary(operator, Box::new(expr), Box::new(right));
+                }
+                expr
+            }
+            fn unary(&mut self) -> Expr<'a>{
+                if self.token_match([Token::Bang, Token::Minus]){
+                    let operator = self.previous();
+                    let expr = self.unary();
+                    return Expr::Unary(operator, Box::new(expr))
+                }
+                self.primary()
+            }
+
+            fn primary(&mut self) -> Expr<'a>{
+                if self.token_match([Token::Number(0.0), Token::String(String::new()), Token::True, Token::False, Token::Nil]){
+                    let literal = self.previous();
+                    return Expr::Literal(literal)
+                }
+                if self.token_match([Token::LeftParen]){
+                    let expr = self.expression();
+                    if self.token_match([Token::RightParen]){
+                        return Expr::Grouping(Box::new(expr))
+                    }
+                }
+                panic!("Parsing went wrong!!! :(")
+            }
+
         }
-
-
     }
-
-
 
 }
