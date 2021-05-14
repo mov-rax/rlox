@@ -307,6 +307,8 @@ mod visit {
         fn visit_binary_expr(&mut self, expr: &Expr) -> T;
         fn visit_expression_stmt(&mut self, stmt: &Stmt) -> T;
         fn visit_print_stmt(&mut self, stmt: &Stmt) -> T;
+        fn visit_var_stmt(&mut self, stmt: &Stmt) -> T;
+        fn visit_var_expr(&mut self, name:&Expr) -> T;
     }
 }
 
@@ -321,10 +323,13 @@ pub mod parser {
     use std::str::{Chars, FromStr};
     use crate::lox_lib::lexer::Token::SemiColon;
 
+
+
     #[derive(Debug, Clone)]
     pub enum Stmt {
         ExprStmt(Expr),
         PrintStmt(Expr),
+        VarStmt(Token, Option<Expr>) // Optional Expr when declaring a Variable
     }
 
     impl Stmt{
@@ -332,6 +337,14 @@ pub mod parser {
             match self{
                 Stmt::ExprStmt(expr) => expr,
                 Stmt::PrintStmt(expr) => expr,
+                Stmt::VarStmt(_, expr) => expr.as_ref().unwrap(),
+            }
+        }
+
+        pub fn unwrap_var(&self) -> (&Token, Option<&Expr>){
+            match self{
+                Stmt::VarStmt(tok, expr) => (tok, expr.as_ref()),
+                other => panic!("Tried to unwrap a {:?} as a VarStmt!", other)
             }
         }
     }
@@ -342,6 +355,7 @@ pub mod parser {
         Binary(Token, Box<Expr>, Box<Expr>),
         Literal(Token),
         Grouping(Box<Expr>),
+        Variable(Token)
     }
 
     impl Expr{
@@ -376,6 +390,10 @@ pub mod parser {
                 Self::Grouping(_) => write!(f, "Grouping"),
                 Self::Unary(_, _) => write!(f, "Unary"),
                 Self::Binary(_, _, _) => write!(f, "Binary"),
+                Self::Variable(name) => match name {
+                    Token::Identifier(name) => write!(f, "Variable({})", name),
+                    _ => write!(f, "Variable(UNKNOWN)")
+                    }
             }
         }
     }
@@ -393,7 +411,7 @@ pub mod parser {
         pub fn parse_all(&mut self) -> Result<Vec<Stmt>>{
             let mut statements = Vec::new();
             while !self.is_at_end() {
-                statements.push(self.statement()?);
+                statements.push(self.declaration()?);
             }
             Ok(statements)
         }
@@ -465,6 +483,29 @@ pub mod parser {
                 }
             }
             false
+        }
+
+        fn var_declaration(&mut self) -> Result<Stmt>{
+            let name = self.safe_advance()?;
+            let init;
+            if self.token_match([Token::Equal]){
+                init = Some(self.expression()?);
+            } else {
+                init = None;
+            }
+            let semi = self.safe_advance()?;
+            match semi{
+                Token::SemiColon => Ok(Stmt::VarStmt(name, init)),
+                other => Err(anyhow!("Expected a ';', got {:?}", other))
+            }
+
+        }
+
+        fn declaration(&mut self) -> Result<Stmt>{
+            if self.token_match([Token::Var]){
+                return self.var_declaration()
+            }
+            self.statement()
         }
 
         fn statement(&mut self) -> Result<Stmt>{
@@ -558,6 +599,10 @@ pub mod parser {
                 let literal = self.previous();
                 return Ok(Expr::Literal(literal));
             }
+            if self.token_match([Token::Identifier(String::new())]){
+                return Ok(Expr::Variable(self.previous()))
+            }
+
             if self.token_match([Token::LeftParen]) {
                 let expr = self.expression();
                 if self.token_match([Token::RightParen]) {
@@ -575,8 +620,13 @@ pub mod interpreter {
     use super::parser::Stmt;
     use anyhow::{anyhow, Context, Error, Result};
     use crate::lox_lib::visit::Visitor;
+    use super::environment::Environment;
+    use std::any::Any;
+    use std::collections::HashMap;
 
-    pub struct Interpreter {}
+    pub struct Interpreter {
+        environment: Environment
+    }
     
     impl super::visit::Visitor<Result<Token>> for Interpreter{
         fn accept(&mut self, expr: &Expr) -> Result<Token>{
@@ -584,7 +634,8 @@ pub mod interpreter {
                 Expr::Binary(_,..) => self.visit_binary_expr(expr),
                 Expr::Unary(_,..) => self.visit_unary_expr(expr),
                 Expr::Grouping(_) => self.visit_grouping_expr(expr),
-                Expr::Literal(_) => self.visit_literal_expr(expr)
+                Expr::Literal(_) => self.visit_literal_expr(expr),
+                Expr::Variable(_) => self.visit_var_expr(expr),
             }
         }
 
@@ -708,11 +759,40 @@ pub mod interpreter {
             };
             Ok(Token::Nil)
         }
+
+        fn visit_var_stmt(&mut self, stmt: &Stmt) -> Result<Token> {
+            let statement = stmt.unwrap_var();
+            let value = match statement.1 {
+                Some(expr) => self.accept(expr)?,
+                None => Token::Nil,
+            };
+            let name = match statement.0{
+                Token::Identifier(name) => name.clone(),
+                _ => return Err(anyhow!("No identifier found for Variable."))
+            };
+            let _ = self.environment.define(name, value);
+            Ok(Token::Nil)
+        }
+
+        fn visit_var_expr(&mut self, name:&Expr) -> Result<Token>{
+            match name{
+                Expr::Variable(Token::Identifier(name)) => {
+                    let res = self.environment.get(name);
+                    match res {
+                        Some(data) => Ok(data.clone()),
+                        None => Err(anyhow!("Undefined Variable Identifier '{}'.", name))
+                    }
+                }
+                _ => Err(anyhow!("Invalid Variable Identifier."))
+            }
+        }
     }
 
     impl Interpreter {
         pub fn new() -> Self{
-            Self{}
+            Self {
+                environment: Environment::new()
+            }
         }
 
         pub fn execute(&mut self, expr: Expr) -> Result<Token>{
@@ -723,7 +803,8 @@ pub mod interpreter {
             for stmt in statements{
                 let _ = match &stmt{
                     Stmt::PrintStmt(_) => self.visit_print_stmt(&stmt),
-                    Stmt::ExprStmt(_) => self.visit_expression_stmt(&stmt)
+                    Stmt::ExprStmt(_) => self.visit_expression_stmt(&stmt),
+                    Stmt::VarStmt(_, _) => self.visit_var_stmt(&stmt)
                 };
             }
             Ok(())
@@ -746,4 +827,34 @@ pub mod interpreter {
             }
         }
     }
+
+
+}
+
+pub mod environment {
+    use std::collections::HashMap;
+    use std::any::{Any, TypeId};
+    use super::parser::Expr;
+    use crate::lox_lib::lexer::Token;
+
+    pub struct Environment{
+        values:HashMap<String, Token>
+    }
+
+    impl Environment{
+        pub fn new() -> Self{
+            Self {
+                values: HashMap::new()
+            }
+        }
+
+        pub fn define(&mut self, name:String, value:Token){
+            let _ = self.values.insert(name, value);
+        }
+
+        pub fn get(&mut self, name:&String) -> Option<&Token> {
+            self.values.get(name)
+        }
+    }
+
 }

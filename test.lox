@@ -1,4 +1,4 @@
-print "Hi";
-print "How";
-print "Are";
-print "you? " + 2 + " day?";
+var name = "Antidisestablishmentarianism";
+var num1 = 12;
+var num2 = 26;
+print name + " " + (num1 + num2);
