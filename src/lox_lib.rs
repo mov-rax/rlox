@@ -137,20 +137,19 @@ pub mod lexer {
                                     true
                                 }
                                 _ => false,
-                            })
-                        {} // Returns None if not whitespace
+                            }){}
+                         // Returns None if not whitespace
                         self.line += line_inc;
                         if line_inc != 0 {
                             // resets character count after each newline.
                             self.current = 0;
                         } else {
                             self.current += current_inc;
-                            self.total_current += current_inc;
                         }
+                        self.total_current += current_inc;
                         tok = self.scan_token()?;
                     }
-                    '"' => {
-
+                    '"' => { // Strings
                         let mut string = String::new();
                         while let Some(c) = self.stream.as_mut().unwrap().peek() {
                             if *c != '"' {
@@ -159,10 +158,17 @@ pub mod lexer {
                                 break;
                             }
                         }
+
                         match self.stream.as_mut().unwrap().next(){
-                            Some('"') => tok = Token::String(string),
+                            Some('"') => {
+                                let len = string.len(); // Adding 2 for opening and closing quotations
+                                self.current += 1 + len;
+                                self.total_current += 1 + len;
+                                tok = Token::String(string);
+                            },
                             _ => return Err(format!("Non-terminating string at line {}", self.line))
                         }
+
                     }
                     '0'..='9' => {
                         let mut len = 0;
@@ -215,7 +221,7 @@ pub mod lexer {
                         //Identifier
                         let mut len = 0;
                         while let Some(n) = self.stream.as_mut().unwrap().peek() {
-                            if n.is_alphabetic() {
+                            if n.is_alphanumeric() {
                                 let _ = self.stream.as_mut().unwrap().next();
                                 len += 1;
                             } else {
@@ -280,6 +286,10 @@ pub mod lexer {
                     break;
                 }
             }
+            match tokens.last() {
+                Some(Token::Eof) => {},
+                _ => tokens.push(Token::Eof)
+            }
             return Ok(tokens);
         }
     }
@@ -287,6 +297,7 @@ pub mod lexer {
 mod visit {
     use super::parser::Expr;
     use super::lexer::Token;
+    use super::parser::Stmt;
 
     pub trait Visitor<T>{
         fn accept(&mut self, expr: &Expr) -> T;
@@ -294,6 +305,8 @@ mod visit {
         fn visit_grouping_expr(&mut self, expr: &Expr) -> T;
         fn visit_unary_expr(&mut self, expr: &Expr) -> T;
         fn visit_binary_expr(&mut self, expr: &Expr) -> T;
+        fn visit_expression_stmt(&mut self, stmt: &Stmt) -> T;
+        fn visit_print_stmt(&mut self, stmt: &Stmt) -> T;
     }
 }
 
@@ -306,6 +319,22 @@ pub mod parser {
     use std::fmt::{Display, Formatter};
     use std::slice::Iter;
     use std::str::{Chars, FromStr};
+    use crate::lox_lib::lexer::Token::SemiColon;
+
+    #[derive(Debug, Clone)]
+    pub enum Stmt {
+        ExprStmt(Expr),
+        PrintStmt(Expr),
+    }
+
+    impl Stmt{
+        pub fn expression(&self) -> &Expr{
+            match self{
+                Stmt::ExprStmt(expr) => expr,
+                Stmt::PrintStmt(expr) => expr,
+            }
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub enum Expr {
@@ -361,6 +390,14 @@ pub mod parser {
             Self { tokens, current: 0 }
         }
 
+        pub fn parse_all(&mut self) -> Result<Vec<Stmt>>{
+            let mut statements = Vec::new();
+            while !self.is_at_end() {
+                statements.push(self.statement()?);
+            }
+            Ok(statements)
+        }
+
         pub fn parse(&mut self) -> Result<Expr> {
             self.expression()
         }
@@ -385,6 +422,16 @@ pub mod parser {
                 }
             }
             self.previous()
+        }
+
+        fn safe_advance(&mut self) -> Result<Token>{
+            return match self.tokens.get(self.current) {
+                Some(tok) => {
+                    self.current += 1;
+                    Ok(tok.clone())
+                },
+                None => Err(anyhow!("Parsing Out-Of-Bounds Detected!"))
+            }
         }
 
         fn token_match<const N: usize>(&mut self, tokens: [Token; N]) -> bool {
@@ -418,6 +465,29 @@ pub mod parser {
                 }
             }
             false
+        }
+
+        fn statement(&mut self) -> Result<Stmt>{
+            if self.token_match([Token::Print]){
+                return self.print_statement()
+            }
+            self.expression_statement()
+        }
+
+        fn print_statement(&mut self) -> Result<Stmt>{
+            let value = self.expression()?;
+            match self.safe_advance()?{
+                Token::SemiColon => Ok(Stmt::PrintStmt(value)),
+                other => Err(anyhow!("Expected ';', got {:?}", other))
+            }
+        }
+
+        fn expression_statement(&mut self) -> Result<Stmt>{
+            let expr = self.expression()?;
+            match self.safe_advance()?{
+                Token::SemiColon => Ok(Stmt::ExprStmt(expr)),
+                other => Err(anyhow!("Expected ';', got {:?}", other))
+            }
         }
 
         fn expression(&mut self) -> Result<Expr> {
@@ -502,12 +572,11 @@ pub mod parser {
 pub mod interpreter {
     use super::lexer::Token;
     use super::parser::Expr;
+    use super::parser::Stmt;
     use anyhow::{anyhow, Context, Error, Result};
     use crate::lox_lib::visit::Visitor;
 
-    pub struct Interpreter {
-        tree: Expr
-    }
+    pub struct Interpreter {}
     
     impl super::visit::Visitor<Result<Token>> for Interpreter{
         fn accept(&mut self, expr: &Expr) -> Result<Token>{
@@ -625,16 +694,39 @@ pub mod interpreter {
                 Err(anyhow!("Expected Binary, got {}", expr))
             }
         }
+
+        fn visit_expression_stmt(&mut self, stmt: &Stmt) -> Result<Token> {
+            self.accept(stmt.expression())
+        }
+
+        fn visit_print_stmt(&mut self, stmt: &Stmt) -> Result<Token> {
+            let value = self.accept(stmt.expression())?;
+            match value{
+                Token::Number(num) => println!("{}", num),
+                Token::String(string) => println!("{}", string),
+                other => println!("{:?}", other)
+            };
+            Ok(Token::Nil)
+        }
     }
 
     impl Interpreter {
-        pub fn execute(&mut self) -> Result<Token>{
-            let tree = std::mem::replace(&mut self.tree, Expr::Literal(Token::Nil));
-            self.accept(&tree)
+        pub fn new() -> Self{
+            Self{}
         }
 
-        pub fn from(tree: Expr) -> Self {
-            Self { tree }
+        pub fn execute(&mut self, expr: Expr) -> Result<Token>{
+            self.accept(&expr)
+        }
+
+        pub fn execute_all(&mut self, statements: Vec<Stmt>) -> Result<()>{
+            for stmt in statements{
+                let _ = match &stmt{
+                    Stmt::PrintStmt(_) => self.visit_print_stmt(&stmt),
+                    Stmt::ExprStmt(_) => self.visit_expression_stmt(&stmt)
+                };
+            }
+            Ok(())
         }
 
         /// Nil & False are Falsy, Everything else is truthy
