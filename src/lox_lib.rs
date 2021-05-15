@@ -304,6 +304,7 @@ mod visit {
         fn visit_var_expr(&mut self, name:&Expr) -> T;
         fn visit_assign_expr(&mut self, expr:&Expr) -> T;
         fn visit_block_stmt(&mut self, stmt:&Stmt) -> T;
+        fn visit_if_stmt(&mut self, stmt:&Stmt) -> T;
     }
 }
 
@@ -324,6 +325,7 @@ pub mod parser {
     pub enum Stmt {
         Block(Vec<Stmt>),
         ExprStmt(Expr),
+        IfStmt(Expr, Box<Stmt>, Option<Box<Stmt>>), // condition, then_branch, else_branch
         PrintStmt(Expr),
         VarStmt(Token, Option<Expr>) // Optional Expr when declaring a Variable
     }
@@ -334,6 +336,7 @@ pub mod parser {
                 Stmt::ExprStmt(expr) => expr,
                 Stmt::PrintStmt(expr) => expr,
                 Stmt::VarStmt(_, expr) => expr.as_ref().unwrap(),
+                Stmt::IfStmt(expr, _, _) => expr,
                 a => panic!("Tried to get an expression from a {:?}", a)
             }
         }
@@ -349,6 +352,13 @@ pub mod parser {
             match self{
                 Stmt::Block(stmts) => stmts,
                 other => panic!("Tried to unwrap a {:?} as a Block!", other)
+            }
+        }
+        /// Returns (condition, true_branch, Option<else_branch>)
+        pub fn unwrap_if(&self) -> (&Expr, &Box<Stmt>, Option<&Box<Stmt>>){
+            match self{
+                Stmt::IfStmt(cond, true_block, else_block) => (cond, true_block, else_block.as_ref()),
+                other => panic!("Tried to unwrap a {:?} as an If!", other)
             }
         }
     }
@@ -521,7 +531,32 @@ pub mod parser {
             if self.token_match([Token::LeftBrace]){
                 return Ok(Stmt::Block(self.block()?))
             }
+            if self.token_match([Token::If]){
+                return Ok(self.if_statement()?)
+            }
             self.expression_statement()
+        }
+
+        fn if_statement(&mut self) -> Result<Stmt>{
+            match self.safe_advance(){
+                Ok(Token::LeftParen) => {},
+                _ => return Err(anyhow!("Expected '(' after 'if'.")),
+            }
+
+            let condition = self.expression()?;
+            match self.safe_advance(){
+                Ok(Token::RightParen) => {},
+                _ => return Err(anyhow!("Expected ')' after if condition.")),
+            }
+
+            let then_branch = self.statement()?;
+            let else_branch;
+            if self.token_match([Token::Else]){
+                else_branch = Some(Box::from(self.statement()?));
+            } else {
+                else_branch = None;
+            }
+            Ok(Stmt::IfStmt(condition, Box::from(then_branch), else_branch))
         }
 
         fn print_statement(&mut self) -> Result<Stmt>{
@@ -847,6 +882,15 @@ pub mod interpreter {
             Ok(Token::Nil)
         }
 
+        fn visit_if_stmt(&mut self, stmt: &Stmt) -> Result<Token> {
+            let (condition, true_branch, else_branch) = stmt.unwrap_if();
+            if Self::is_truthy(&self.execute(condition)?){
+                return self.execute_stmt(true_branch)
+            } else if let Some(else_branch) = else_branch{
+                return self.execute_stmt(else_branch)
+            }
+            Ok(Token::Nil)
+        }
     }
 
     impl Interpreter {
@@ -856,25 +900,27 @@ pub mod interpreter {
             }
         }
 
-        pub fn execute(&mut self, expr: Expr) -> Result<Token>{
+        pub fn execute(&mut self, expr: &Expr) -> Result<Token>{
             self.accept(&expr)
         }
 
+        pub fn execute_stmt(&mut self, stmt: &Stmt) -> Result<Token>{
+            match stmt{
+                Stmt::PrintStmt(_) => self.visit_print_stmt(stmt),
+                Stmt::ExprStmt(_) => self.visit_expression_stmt(stmt),
+                Stmt::VarStmt(_, _) => self.visit_var_stmt(stmt),
+                Stmt::Block(_) => self.visit_block_stmt(stmt),
+                Stmt::IfStmt(_,..) => self.visit_if_stmt(stmt),
+            }
+        }
+
         pub fn execute_all(&mut self, statements: &Vec<Stmt>) -> Result<Token>{
-            let mut matchy = |stmt:&Stmt| match stmt{
-                    Stmt::PrintStmt(_) => self.visit_print_stmt(stmt),
-                    Stmt::ExprStmt(_) => self.visit_expression_stmt(stmt),
-                    Stmt::VarStmt(_, _) => self.visit_var_stmt(stmt),
-                    Stmt::Block(_) => self.visit_block_stmt(stmt)
-                };
-
-
             for i in 0..statements.len()-1{
                 let stmt = &statements[i];
-                let _ = matchy(stmt);
+                let _ = self.execute_stmt(stmt);
             }
             let last = statements.last().unwrap();
-            matchy(last)
+            self.execute_stmt(last)
         }
 
         /// Nil & False are Falsy, Everything else is truthy
