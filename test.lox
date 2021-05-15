@@ -1,13 +1,7 @@
 
-if (1 != 1 or 2 == 2) {
-    print "Yes";
-} else {
-    print "No";
+for (var i = 0; i <= 10; i = i + 1) {
+    for (var j = 0; j <= 10; j = j + 1){
+        print i*j;
+    }
 }
 
-var index = 0;
-
-while (index < 10) {
-    print index;
-    index = index + 1;
-}

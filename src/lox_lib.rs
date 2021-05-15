@@ -320,7 +320,7 @@ pub mod parser {
     use std::slice::Iter;
     use std::str::{Chars, FromStr};
     use crate::lox_lib::lexer::Token::SemiColon;
-
+    use std::panic::catch_unwind;
 
 
     #[derive(Debug, Clone)]
@@ -330,7 +330,7 @@ pub mod parser {
         IfStmt(Expr, Box<Stmt>, Option<Box<Stmt>>), // condition, then_branch, else_branch
         PrintStmt(Expr),
         VarStmt(Token, Option<Expr>), // Optional Expr when declaring a Variable
-        WhileStmt(Expr, Box<Stmt>) // condition, body
+        WhileStmt(Expr, Box<Stmt>), // condition, body
     }
 
     impl Stmt{
@@ -369,9 +369,10 @@ pub mod parser {
         pub fn unwrap_while(&self) -> (&Expr, &Box<Stmt>){
             match self{
                 Stmt::WhileStmt(cond, body) => (cond, body),
-                other => panic!("Tried to unwrap a {:?} as a WhileStmt")
+                other => panic!("Tried to unwrap a {:?} as a WhileStmt!")
             }
         }
+
     }
 
     #[derive(Debug, Clone)]
@@ -541,7 +542,6 @@ pub mod parser {
                 Token::SemiColon => Ok(Stmt::VarStmt(name, init)),
                 other => Err(anyhow!("Expected a ';', got {:?}", other))
             }
-
         }
 
         fn declaration(&mut self) -> Result<Stmt>{
@@ -557,6 +557,9 @@ pub mod parser {
             }
             if self.token_match([Token::While]){
                 return self.while_statement()
+            }
+            if self.token_match([Token::For]){
+                return self.for_statement()
             }
             if self.token_match([Token::LeftBrace]){
                 return Ok(Stmt::Block(self.block()?))
@@ -609,6 +612,54 @@ pub mod parser {
             }
             let body = Box::from(self.statement()?);
             Ok(Stmt::WhileStmt(condition, body))
+        }
+
+        fn for_statement(&mut self) -> Result<Stmt>{
+            match self.safe_advance(){
+                Ok(Token::LeftParen) => {},
+                _ => return Err(anyhow!("Expected '(' after 'for'.")),
+            }
+            let initializer;
+            if self.token_match([Token::SemiColon]){
+                initializer = None;
+            } else if self.token_match([Token::Var]){
+                initializer = Some(self.var_declaration()?);
+            } else {
+                initializer = Some(self.expression_statement()?);
+            }
+            let cond = match &self.tokens[self.current-1]{
+                Token::SemiColon => self.expression()?,
+                _ => return Err(anyhow!("Expected condition in for loop.")),
+            };
+            if !self.token_match([Token::SemiColon]){
+                return Err(anyhow!("Expected ';' after for loop condition."))
+            }
+
+            let inc = match &self.tokens[self.current]{
+                Token::RightParen => None,
+                _ => Some(self.expression()?)
+            };
+            match self.safe_advance(){
+                Ok(Token::RightParen) => {},
+                _ => return Err(anyhow!("Expected ')' after 'for'.")),
+            }
+            let mut body = self.statement()?;
+
+            match inc{
+                Some(inc) => {
+                    body = Stmt::Block(vec![body, Stmt::ExprStmt(inc)]);
+                },
+                None => {}
+            }
+
+            match initializer{
+                Some(initializer) => {
+                    body = Stmt::Block(vec![initializer, Stmt::WhileStmt(cond, Box::from(body))]);
+                },
+                None => {}
+            }
+
+            Ok(body)
         }
 
         fn expression_statement(&mut self) -> Result<Stmt>{
@@ -986,6 +1037,7 @@ pub mod interpreter {
             }
             Ok(Token::Nil)
         }
+
     }
 
     impl Interpreter {
