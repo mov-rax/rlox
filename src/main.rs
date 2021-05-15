@@ -13,7 +13,7 @@ fn main() {
     let program = parser.parse_all();
 
     match program{
-        Ok(stmts) => {
+        Ok(ref stmts) => {
             let mut interpreter = Interpreter::new();
             let result = interpreter.execute_all(stmts);
             if let Err(e) = result{
@@ -22,21 +22,4 @@ fn main() {
         },
         Err(e) => println!("{:?}", e)
     }
-
-    // let expr = parser.parse();
-
-    // match expr {
-    //     Ok(v) => {
-    //         println!("{:?}", &v);
-    //         let mut interpreter = Interpreter::new();
-    //         let result = interpreter.execute(v);
-    //         println!("{:?}", result);
-    //         println!("{}", time.elapsed().as_micros());
-    //     },
-    //     Err(e) => println!("{:?}", e),
-    // }
-
-    //println!("{:?}", tokens);
-    //println!("{:?}", expr);
-    //println!("Hello, world!");
 }

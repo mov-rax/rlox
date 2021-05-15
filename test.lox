@@ -1,4 +1,19 @@
-var name = "Antidisestablishmentarianism";
-var num1 = 12;
-var num2 = 26;
-print name + " " + (num1 + num2);
+var a = "global a";
+var b = "global b";
+var c = "global c";
+{
+  var a = "outer a";
+  var b = "outer b";
+  {
+    var a = "inner a";
+    print a;
+    print b;
+    print c;
+  }
+  print a;
+  print b;
+  print c;
+}
+print a;
+print b;
+print c;

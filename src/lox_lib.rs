@@ -171,10 +171,11 @@ pub mod lexer {
 
                     }
                     '0'..='9' => {
+                        let mut buf = String::from(c);
                         let mut len = 0;
                         while let Some(n) = self.stream.as_mut().unwrap().peek() {
                             if n.is_digit(10) {
-                                let _ = self.stream.as_mut().unwrap().next();
+                                buf.push(self.stream.as_mut().unwrap().next().unwrap());
                                 len += 1;
                             } else {
                                 break;
@@ -182,7 +183,7 @@ pub mod lexer {
                         }
                         if let Some(n) = self.stream.as_mut().unwrap().peek() {
                             if *n == '.' {
-                                let _ = self.stream.as_mut().unwrap().next();
+                                buf.push(self.stream.as_mut().unwrap().next().unwrap());
                                 len += 1;
                                 if let Some(n) = self.stream.as_mut().unwrap().peek() {
                                     if !n.is_digit(10) {
@@ -194,7 +195,7 @@ pub mod lexer {
                                 }
                                 while let Some(n) = self.stream.as_mut().unwrap().peek() {
                                     if n.is_digit(10) {
-                                        let _ = self.stream.as_mut().unwrap().next();
+                                        buf.push(self.stream.as_mut().unwrap().next().unwrap());
                                         len += 1;
                                     } else {
                                         if *n == '.' {
@@ -208,33 +209,25 @@ pub mod lexer {
                                 }
                             }
                         }
-                        //tok = Token::Number(f64::from_str(buf.as_str()).unwrap());
-                        let stringy = self
-                            .src
-                            .get(self.total_current - 1..self.total_current + len)
-                            .unwrap();
-                        self.total_current += len;
-                        self.current += len;
-                        tok = Token::Number(f64::from_str(stringy).unwrap());
+
+                        self.total_current += buf.len();
+                        self.current += buf.len();
+                        tok = Token::Number(f64::from_str(buf.as_str()).unwrap());
                     }
                     'a'..='z' | 'A'..='Z' | '_' => {
                         //Identifier
-                        let mut len = 0;
+                        let mut buf = String::from(c);
                         while let Some(n) = self.stream.as_mut().unwrap().peek() {
                             if n.is_alphanumeric() {
-                                let _ = self.stream.as_mut().unwrap().next();
-                                len += 1;
+                                buf.push(self.stream.as_mut().unwrap().next().unwrap());
                             } else {
                                 break;
                             }
                         }
 
-                        let stringy = self
-                            .src
-                            .get(self.total_current - 1..self.total_current + len)
-                            .unwrap();
+                        let len = buf.len();
 
-                        if let Some(n) = match stringy {
+                        if let Some(n) = match buf.as_str() {
                             "if" => Some(Token::If),
                             "else" => Some(Token::Else),
                             "class" => Some(Token::Class),
@@ -255,7 +248,7 @@ pub mod lexer {
                         } {
                             tok = n.to_owned();
                         } else {
-                            tok = Token::Identifier(stringy.to_string());
+                            tok = Token::Identifier(buf);
                         }
 
                         self.total_current += len;
@@ -309,6 +302,8 @@ mod visit {
         fn visit_print_stmt(&mut self, stmt: &Stmt) -> T;
         fn visit_var_stmt(&mut self, stmt: &Stmt) -> T;
         fn visit_var_expr(&mut self, name:&Expr) -> T;
+        fn visit_assign_expr(&mut self, expr:&Expr) -> T;
+        fn visit_block_stmt(&mut self, stmt:&Stmt) -> T;
     }
 }
 
@@ -327,6 +322,7 @@ pub mod parser {
 
     #[derive(Debug, Clone)]
     pub enum Stmt {
+        Block(Vec<Stmt>),
         ExprStmt(Expr),
         PrintStmt(Expr),
         VarStmt(Token, Option<Expr>) // Optional Expr when declaring a Variable
@@ -338,6 +334,7 @@ pub mod parser {
                 Stmt::ExprStmt(expr) => expr,
                 Stmt::PrintStmt(expr) => expr,
                 Stmt::VarStmt(_, expr) => expr.as_ref().unwrap(),
+                a => panic!("Tried to get an expression from a {:?}", a)
             }
         }
 
@@ -347,11 +344,19 @@ pub mod parser {
                 other => panic!("Tried to unwrap a {:?} as a VarStmt!", other)
             }
         }
+
+        pub fn unwrap_block(&self) -> &Vec<Stmt>{
+            match self{
+                Stmt::Block(stmts) => stmts,
+                other => panic!("Tried to unwrap a {:?} as a Block!", other)
+            }
+        }
     }
 
     #[derive(Debug, Clone)]
     pub enum Expr {
         Unary(Token, Box<Expr>),
+        Assign(Token, Box<Expr>),
         Binary(Token, Box<Expr>, Box<Expr>),
         Literal(Token),
         Grouping(Box<Expr>),
@@ -393,7 +398,8 @@ pub mod parser {
                 Self::Variable(name) => match name {
                     Token::Identifier(name) => write!(f, "Variable({})", name),
                     _ => write!(f, "Variable(UNKNOWN)")
-                    }
+                    },
+                Self::Assign(name, value) => write!(f, "Assignment of '{:?}' to {:?}", name, value)
             }
         }
     }
@@ -512,6 +518,9 @@ pub mod parser {
             if self.token_match([Token::Print]){
                 return self.print_statement()
             }
+            if self.token_match([Token::LeftBrace]){
+                return Ok(Stmt::Block(self.block()?))
+            }
             self.expression_statement()
         }
 
@@ -531,8 +540,33 @@ pub mod parser {
             }
         }
 
+        fn block(&mut self) -> Result<Vec<Stmt>>{
+            let mut statements = Vec::new();
+            while !self.is_at_end() && self.tokens[self.current] != Token::RightBrace{
+                statements.push(self.declaration()?);
+            }
+            match self.safe_advance() {
+                Ok(Token::RightBrace) => Ok(statements),
+                _ => Err(anyhow!("Expected '}' after block."))
+            }
+
+        }
+
         fn expression(&mut self) -> Result<Expr> {
-            self.equality()
+            self.assignment()
+        }
+
+        fn assignment(&mut self) -> Result<Expr>{
+            let expr = self.equality()?;
+            if self.token_match([Token::Equal]) {
+                //let equals = self.previous();
+                let value = self.assignment()?;
+                return match &expr{
+                    Expr::Variable(ident) =>  Ok(Expr::Assign(ident.clone(), Box::new(value))),
+                    other => Err(anyhow!("Invalid assignment Target {:?}", other))
+                }
+            }
+            Ok(expr)
         }
 
         fn equality(&mut self) -> Result<Expr> {
@@ -609,7 +643,7 @@ pub mod parser {
                     return Ok(Expr::Grouping(Box::new(expr?)));
                 }
             }
-            Err(anyhow!("Syntax error at token {}", self.current + 1))
+            Err(anyhow!("Syntax error at token {}, [{:?}]", self.current + 1, &self.tokens[self.current]))
         }
     }
 }
@@ -625,7 +659,7 @@ pub mod interpreter {
     use std::collections::HashMap;
 
     pub struct Interpreter {
-        environment: Environment
+        environment: Box<Environment>
     }
     
     impl super::visit::Visitor<Result<Token>> for Interpreter{
@@ -636,6 +670,7 @@ pub mod interpreter {
                 Expr::Grouping(_) => self.visit_grouping_expr(expr),
                 Expr::Literal(_) => self.visit_literal_expr(expr),
                 Expr::Variable(_) => self.visit_var_expr(expr),
+                Expr::Assign(_,..) => self.visit_assign_expr(expr),
             }
         }
 
@@ -780,18 +815,44 @@ pub mod interpreter {
                     let res = self.environment.get(name);
                     match res {
                         Some(data) => Ok(data.clone()),
-                        None => Err(anyhow!("Undefined Variable Identifier '{}'.", name))
+                        None => Err(anyhow!("Undefined Identifier '{}'.", name))
                     }
                 }
                 _ => Err(anyhow!("Invalid Variable Identifier."))
             }
         }
+
+        fn visit_assign_expr(&mut self, expr: &Expr) -> Result<Token> {
+            let value = match expr {
+                Expr::Assign(ident, value) => {
+                    let ident = match ident {
+                        Token::Identifier(name) => name,
+                        _ => panic!("Panic at visit_assign_expr. I'm not sure how this happened.")
+                    };
+                    (ident, self.accept(value)?)
+                },
+                other => return Err(anyhow!("Expected Assignment, got {:?}", other))
+            };
+            self.environment.assign(value.0, value.1)
+        }
+
+        fn visit_block_stmt(&mut self, stmt: &Stmt) -> Result<Token> {
+            let statements = stmt.unwrap_block();
+            let previous_env = std::mem::replace(&mut self.environment, Box::from(Environment::new())); // Replaces old environment with a new one
+            self.environment.set_enclosing(previous_env); // Inserts old environment into old one.
+            self.execute_all(statements);
+            let previous_env = self.environment.get_enclosing(); // Get back old value (wrapped in an Option)
+            let previous_env = std::mem::replace(previous_env, None).unwrap(); // Gets back ownership of old value.
+            self.environment = previous_env;
+            Ok(Token::Nil)
+        }
+
     }
 
     impl Interpreter {
         pub fn new() -> Self{
             Self {
-                environment: Environment::new()
+                environment: Box::from(Environment::new())
             }
         }
 
@@ -799,15 +860,21 @@ pub mod interpreter {
             self.accept(&expr)
         }
 
-        pub fn execute_all(&mut self, statements: Vec<Stmt>) -> Result<()>{
-            for stmt in statements{
-                let _ = match &stmt{
-                    Stmt::PrintStmt(_) => self.visit_print_stmt(&stmt),
-                    Stmt::ExprStmt(_) => self.visit_expression_stmt(&stmt),
-                    Stmt::VarStmt(_, _) => self.visit_var_stmt(&stmt)
+        pub fn execute_all(&mut self, statements: &Vec<Stmt>) -> Result<Token>{
+            let mut matchy = |stmt:&Stmt| match stmt{
+                    Stmt::PrintStmt(_) => self.visit_print_stmt(stmt),
+                    Stmt::ExprStmt(_) => self.visit_expression_stmt(stmt),
+                    Stmt::VarStmt(_, _) => self.visit_var_stmt(stmt),
+                    Stmt::Block(_) => self.visit_block_stmt(stmt)
                 };
+
+
+            for i in 0..statements.len()-1{
+                let stmt = &statements[i];
+                let _ = matchy(stmt);
             }
-            Ok(())
+            let last = statements.last().unwrap();
+            matchy(last)
         }
 
         /// Nil & False are Falsy, Everything else is truthy
@@ -833,18 +900,20 @@ pub mod interpreter {
 
 pub mod environment {
     use std::collections::HashMap;
-    use std::any::{Any, TypeId};
     use super::parser::Expr;
     use crate::lox_lib::lexer::Token;
+    use anyhow::{Result, Error, Context, anyhow};
 
     pub struct Environment{
-        values:HashMap<String, Token>
+        values:HashMap<String, Token>,
+        enclosing: Option<Box<Environment>>
     }
 
     impl Environment{
         pub fn new() -> Self{
             Self {
-                values: HashMap::new()
+                values: HashMap::new(),
+                enclosing: None,
             }
         }
 
@@ -853,8 +922,36 @@ pub mod environment {
         }
 
         pub fn get(&mut self, name:&String) -> Option<&Token> {
-            self.values.get(name)
+            match self.values.get(name){
+                Some(tok) => Some(tok),
+                None => match &mut self.enclosing{
+                    Some(env) => env.get(name),
+                    None => None
+                }
+            }
         }
+
+        pub fn assign(&mut self, name:&String, value:Token) -> Result<Token>{
+            match self.values.get_mut(name){
+                Some(tok) => {
+                    *tok = value;
+                    Ok(tok.clone())
+                },
+                None => match &mut self.enclosing{
+                    Some(env) => env.assign(name, value),
+                    None => Err(anyhow!("Undefined Variable {}", name))
+                }
+            }
+        }
+
+        pub fn set_enclosing(&mut self, env:Box<Environment>){
+            self.enclosing = Some(env);
+        }
+
+        pub fn get_enclosing(&mut self) -> &mut Option<Box<Environment>> {
+            &mut self.enclosing
+        }
+
     }
 
 }
