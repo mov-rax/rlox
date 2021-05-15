@@ -306,6 +306,7 @@ mod visit {
         fn visit_block_stmt(&mut self, stmt:&Stmt) -> T;
         fn visit_if_stmt(&mut self, stmt:&Stmt) -> T;
         fn visit_logical_expr(&mut self, expr:&Expr) -> T;
+        fn visit_while_stmt(&mut self, stmt:&Stmt) -> T;
     }
 }
 
@@ -328,7 +329,8 @@ pub mod parser {
         ExprStmt(Expr),
         IfStmt(Expr, Box<Stmt>, Option<Box<Stmt>>), // condition, then_branch, else_branch
         PrintStmt(Expr),
-        VarStmt(Token, Option<Expr>) // Optional Expr when declaring a Variable
+        VarStmt(Token, Option<Expr>), // Optional Expr when declaring a Variable
+        WhileStmt(Expr, Box<Stmt>) // condition, body
     }
 
     impl Stmt{
@@ -337,7 +339,8 @@ pub mod parser {
                 Stmt::ExprStmt(expr) => expr,
                 Stmt::PrintStmt(expr) => expr,
                 Stmt::VarStmt(_, expr) => expr.as_ref().unwrap(),
-                Stmt::IfStmt(expr, _, _) => expr,
+                Stmt::IfStmt(expr,..) => expr,
+                Stmt::WhileStmt(expr, _) => expr,
                 a => panic!("Tried to get an expression from a {:?}", a)
             }
         }
@@ -360,6 +363,13 @@ pub mod parser {
             match self{
                 Stmt::IfStmt(cond, true_block, else_block) => (cond, true_block, else_block.as_ref()),
                 other => panic!("Tried to unwrap a {:?} as an If!", other)
+            }
+        }
+        /// Returns (condition, body)
+        pub fn unwrap_while(&self) -> (&Expr, &Box<Stmt>){
+            match self{
+                Stmt::WhileStmt(cond, body) => (cond, body),
+                other => panic!("Tried to unwrap a {:?} as a WhileStmt")
             }
         }
     }
@@ -419,8 +429,8 @@ pub mod parser {
             match self {
                 Self::Literal(_) => write!(f, "Literal"),
                 Self::Grouping(_) => write!(f, "Grouping"),
-                Self::Unary(_, _) => write!(f, "Unary"),
-                Self::Binary(_, _, _) => write!(f, "Binary"),
+                Self::Unary(..) => write!(f, "Unary"),
+                Self::Binary(..) => write!(f, "Binary"),
                 Self::Variable(name) => match name {
                     Token::Identifier(name) => write!(f, "Variable({})", name),
                     _ => write!(f, "Variable(UNKNOWN)")
@@ -545,6 +555,9 @@ pub mod parser {
             if self.token_match([Token::Print]){
                 return self.print_statement()
             }
+            if self.token_match([Token::While]){
+                return self.while_statement()
+            }
             if self.token_match([Token::LeftBrace]){
                 return Ok(Stmt::Block(self.block()?))
             }
@@ -582,6 +595,20 @@ pub mod parser {
                 Token::SemiColon => Ok(Stmt::PrintStmt(value)),
                 other => Err(anyhow!("Expected ';', got {:?}", other))
             }
+        }
+
+        fn while_statement(&mut self) -> Result<Stmt>{
+            match self.safe_advance(){
+                Ok(Token::LeftParen) => {},
+                _ => return Err(anyhow!("Expected '(' after 'while'.")),
+            }
+            let condition = self.expression()?;
+            match self.safe_advance(){
+                Ok(Token::RightParen) => {},
+                _ => return Err(anyhow!("Expected ')' after while condition.")),
+            }
+            let body = Box::from(self.statement()?);
+            Ok(Stmt::WhileStmt(condition, body))
         }
 
         fn expression_statement(&mut self) -> Result<Stmt>{
@@ -951,6 +978,14 @@ pub mod interpreter {
                 _ => self.execute(expr.right())
             }
         }
+
+        fn visit_while_stmt(&mut self, stmt: &Stmt) -> Result<Token> {
+            let (cond, body) = stmt.unwrap_while();
+            while Self::is_truthy(&self.execute(cond)?){
+                self.execute_stmt(body)?;
+            }
+            Ok(Token::Nil)
+        }
     }
 
     impl Interpreter {
@@ -971,6 +1006,7 @@ pub mod interpreter {
                 Stmt::VarStmt(_, _) => self.visit_var_stmt(stmt),
                 Stmt::Block(_) => self.visit_block_stmt(stmt),
                 Stmt::IfStmt(_,..) => self.visit_if_stmt(stmt),
+                Stmt::WhileStmt(_,..) => self.visit_while_stmt(stmt),
             }
         }
 

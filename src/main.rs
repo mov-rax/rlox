@@ -3,8 +3,11 @@ mod lox_lib;
 use lox_lib::interpreter::Interpreter;
 use lox_lib::lexer::Token;
 use lox_lib::parser::Expr;
+use std::time::Instant;
+
 fn main() {
     let text = std::fs::read_to_string("test.lox").unwrap();
+    let time = Instant::now();
     let tokens = lox_lib::lexer::Scanner::from(text.as_str())
         .scan_tokens()
         .unwrap();
@@ -22,4 +25,5 @@ fn main() {
         },
         Err(e) => println!("{:?}", e)
     }
+    println!("TIME TAKEN: {}", time.elapsed().as_micros());
 }
