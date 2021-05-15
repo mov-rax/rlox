@@ -1,6 +1,5 @@
-var a = "free";
-var b = "free";
-if (a == b) {
+
+if (1 != 1 or 2 == 2) {
     print "Yes";
 } else {
     print "No";

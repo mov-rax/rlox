@@ -305,6 +305,7 @@ mod visit {
         fn visit_assign_expr(&mut self, expr:&Expr) -> T;
         fn visit_block_stmt(&mut self, stmt:&Stmt) -> T;
         fn visit_if_stmt(&mut self, stmt:&Stmt) -> T;
+        fn visit_logical_expr(&mut self, expr:&Expr) -> T;
     }
 }
 
@@ -368,6 +369,7 @@ pub mod parser {
         Unary(Token, Box<Expr>),
         Assign(Token, Box<Expr>),
         Binary(Token, Box<Expr>, Box<Expr>),
+        Logical(Token, Box<Expr>, Box<Expr>),
         Literal(Token),
         Grouping(Box<Expr>),
         Variable(Token)
@@ -378,6 +380,7 @@ pub mod parser {
         pub fn right(&self) -> &Expr{
             match self{
                 Expr::Binary(_, _, r) => r,
+                Expr::Logical(_,_, r) => r,
                 _ => panic!("Tried to get a right node from {}!", self)
             }
         }
@@ -385,6 +388,7 @@ pub mod parser {
         pub fn left(&self) -> &Expr{
             match self{
                 Expr::Binary(_, l,_) => l,
+                Expr::Logical(_, l,_) => l,
                 _ => panic!("Tried to get a left node from {}!", self)
             }
         }
@@ -394,6 +398,18 @@ pub mod parser {
                 Expr::Unary(_, expr) => expr,
                 Expr::Grouping(expr) => expr,
                 _ => panic!("Tried to get an expression node from {}!", self)
+            }
+        }
+        /// Gets token from node. If Expr does not have a token, panic!
+        pub fn token(&self) -> &Token{
+            match self{
+                Expr::Unary(tok, _) => tok,
+                Expr::Assign(tok, _) => tok,
+                Expr::Binary(tok, _, _) => tok,
+                Expr::Logical(tok, _, _) => tok,
+                Expr::Literal(tok) => tok,
+                Expr::Grouping(_) => panic!("Tried to get a token from Grouping!"),
+                Expr::Variable(tok) => tok
             }
         }
     }
@@ -409,7 +425,8 @@ pub mod parser {
                     Token::Identifier(name) => write!(f, "Variable({})", name),
                     _ => write!(f, "Variable(UNKNOWN)")
                     },
-                Self::Assign(name, value) => write!(f, "Assignment of '{:?}' to {:?}", name, value)
+                Self::Assign(name, value) => write!(f, "Assignment of '{:?}' to {:?}", name, value),
+                Self::Logical(op, left, right) => write!(f, "{} {:?} {}", left, op, right)
             }
         }
     }
@@ -592,7 +609,7 @@ pub mod parser {
         }
 
         fn assignment(&mut self) -> Result<Expr>{
-            let expr = self.equality()?;
+            let expr = self.logical_or()?;
             if self.token_match([Token::Equal]) {
                 //let equals = self.previous();
                 let value = self.assignment()?;
@@ -601,6 +618,30 @@ pub mod parser {
                     other => Err(anyhow!("Invalid assignment Target {:?}", other))
                 }
             }
+            Ok(expr)
+        }
+
+        fn logical_or(&mut self) -> Result<Expr>{
+            let mut expr = self.logical_and()?;
+
+            while self.token_match([Token::Or]){
+                let operator = self.previous();
+                let right = self.logical_and()?;
+                expr = Expr::Logical(operator, Box::from(expr), Box::from(right));
+            }
+
+            Ok(expr)
+        }
+
+        fn logical_and(&mut self) -> Result<Expr>{
+            let mut expr = self.equality()?;
+
+            while self.token_match([Token::And]){
+                let operator = self.previous();
+                let right = self.equality()?;
+                expr = Expr::Logical(operator, Box::from(expr), Box::from(right));
+            }
+
             Ok(expr)
         }
 
@@ -706,6 +747,7 @@ pub mod interpreter {
                 Expr::Literal(_) => self.visit_literal_expr(expr),
                 Expr::Variable(_) => self.visit_var_expr(expr),
                 Expr::Assign(_,..) => self.visit_assign_expr(expr),
+                Expr::Logical(_,..) => self.visit_logical_expr(expr),
             }
         }
 
@@ -890,6 +932,24 @@ pub mod interpreter {
                 return self.execute_stmt(else_branch)
             }
             Ok(Token::Nil)
+        }
+
+        fn visit_logical_expr(&mut self, expr: &Expr) -> Result<Token> {
+            let left = self.execute(expr.left())?;
+            let operator = expr.token();
+            match operator{
+                Token::Or => if Self::is_truthy(&left){
+                    Ok(Token::True)
+                } else {
+                    Ok(self.execute(expr.right())?)
+                },
+                Token::And => if !Self::is_truthy(&left) {
+                    Ok(Token::False)
+                } else {
+                    self.execute(expr.right())
+                },
+                _ => self.execute(expr.right())
+            }
         }
     }
 
